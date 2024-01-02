@@ -3,13 +3,13 @@
 Forked from https://github.com/Moesif/moesif-aws-lambda-node-js-example
 
 
-## P.S. Add as remote and occasionally fetch+merge updates
+## P.S. Add as remote and occasionally merge updates
 git remote add moesif https://github.com/Moesif/moesif-aws-lambda-node-js-example
-### #test merges here first
-git checkout moesif-merge-integration
+### create branch to test integration
+git checkout -b moesif-merge-integration
 ### Then fetch and merge
 git fetch moesif
-git merge moesif
+git merge moesif/master
 ### if all good then merge to main
 git checkout main
 git merge moesif-merge-integration
