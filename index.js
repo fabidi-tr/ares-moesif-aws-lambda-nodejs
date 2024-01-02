@@ -14,47 +14,29 @@ const docClient = new AWS.DynamoDB.DocumentClient({
 
 console.log("Loading function");
 
+let cachedUserAndCompany = {};
+
 const moesifOptions = {
   applicationId: process.env.MOESIF_APPLICATION_ID,
 
   identifyUser: function (event, context) {
-    console.log("inside identifyUser()");
-    const apiKeyId = event.requestContext.identity.apiKeyId;
-
-    // Return a promise from getUserAndCompany which eventually resolves to the user value
-    return getUserAndCompany(apiKeyId)
-      .then((userAndCompany) => {
-        // Make sure to return the user property, or null if not found
-        console.log("user is: " + userAndCompany ? userAndCompany.user : null);
-        return userAndCompany ? userAndCompany.user : null;
-      })
-      .catch((error) => {
-        console.error("Error in identifyUser:", error);
-        return null; // In case of an error, resolve to null
-      });
+    return new Promise((resolve) => {
+      console.log(
+        "identifyUser(): " +
+          (cachedUserAndCompany ? cachedUserAndCompany.user : null)
+      );
+      resolve(cachedUserAndCompany ? cachedUserAndCompany.user : null);
+    });
   },
 
-  // below is optional: but if you plan to metered billing, moesif have 1 to 1 mapping between company id and subscription id.
-  //
-  // - by providing a subscription id directly.
-  // - or providing a companyId, and during setting up Billing provider, set up mapping from subscription id to company id.
   identifyCompany: function (event, context) {
-    console.log("inside identifyCompany()");
-    const apiKeyId = event.requestContext.identity.apiKeyId;
-
-    // Return a promise from getUserAndCompany which eventually resolves to the companyId
-    return getUserAndCompany(apiKeyId)
-      .then((userAndCompany) => {
-        // Make sure to return the companyId property, or null if not found
-        console.log(
-          "companyId is: " + userAndCompany ? userAndCompany.companyId : null
-        );
-        return userAndCompany ? userAndCompany.companyId : null;
-      })
-      .catch((error) => {
-        console.error("Error in identifyCompany:", error);
-        return null; // In case of an error, resolve to null
-      });
+    return new Promise((resolve) => {
+      console.log(
+        "identifyCompany(): " +
+          (cachedUserAndCompany ? cachedUserAndCompany.companyId : null)
+      );
+      resolve(cachedUserAndCompany ? cachedUserAndCompany.companyId : null);
+    });
   },
 };
 
@@ -64,78 +46,40 @@ var moesifMiddleware = moesif(moesifOptions);
 moesifMiddleware.startCaptureOutgoing();
 
 exports.handler = function (event, context) {
-  const postData = event.body;
+  const apiKeyId = event.requestContext.identity.apiKeyId;
 
-  const options = {
-    hostname: "traversaal-internal-ares-web-agent.hf.space", // Replace with your endpoint's hostname
-    port: 443, // Standard port for HTTPS requests
-    path: "/api/predict", // Replace with your endpoint's path
-    method: 'POST',
-    headers: {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(postData),
-      "Authorization": "Bearer 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"
-    },
-  };
+  return getUserAndCompany(apiKeyId)
+    .then((userAndCompany) => {
+      if (userAndCompany?.user) {
+        cachedUserAndCompany.user = userAndCompany.user;
+      }
+      if (userAndCompany?.companyId) {
+        cachedUserAndCompany.companyId = userAndCompany.companyId;
+      }
 
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      let responseBody = "";
-
-      const statusCode = res.statusCode;
-
-      res.setEncoding("utf8");
-      res.on("data", (chunk) => {
-        responseBody += chunk;
-      });
-      res.on("end", () => {
-        console.log("Response from endpoint:", responseBody);
-        resolve({
-          statusCode: statusCode,
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: responseBody,
-        });
-      });
+      if (userAndCompany && userAndCompany.user) {
+        // User is non-null, proceed with HTTPS request
+        return sendHttpsRequest(event);
+      } else {
+        let errorMsg;
+        if (!userAndCompany) {
+          errorMsg = "Invalid API Key";
+        } else {
+          errorMsg = "User not found for API Key";
+        }
+        return {
+          statusCode: 401,
+          body: JSON.stringify({ error: errorMsg }),
+        };
+      }
+    })
+    .catch((error) => {
+      console.error("Error in handler:", error);
+      return {
+        statusCode: 500,
+        body: JSON.stringify({ error: "Application Internal Server Error" }),
+      };
     });
-
-    req.on("error", (e) => {
-      console.error("Error sending POST request:", e);
-      reject(e);
-    });
-
-    // Write data to request body
-    req.write(postData);
-    req.end();
-  });
-
-  // Outgoing API call to third party
-  // https.get(
-  //   {
-  //     host: "jsonplaceholder.typicode.com",
-  //     path: "/posts/1",
-  //   },
-  //   function (res) {
-  //     var body = "";
-  //     res.on("data", function (d) {
-  //       body += d;
-  //     });
-
-  //     res.on("end", function () {
-  //       var parsed = JSON.parse(body);
-  //       console.log(parsed);
-  //     });
-  //   }
-  // );
-
-  // callback(null, {
-  //   statusCode: "200",
-  //   body: JSON.stringify({ key: "hello world2" }),
-  //   headers: {
-  //     "Content-Type": "application/json",
-  //   },
-  // });
 };
 
 // Async Functions
@@ -148,6 +92,69 @@ exports.handler = function (event, context) {
 //   }
 //   return response
 // }
+
+function sendHttpsRequest(event) {
+  const postData = event.body; // The data you want to send in your POST request
+
+  const options = {
+    hostname: "traversaal-internal-ares-web-agent.hf.space", // Replace with your endpoint's hostname
+    port: 443, // Standard port for HTTPS requests
+    path: "/api/predict", // Replace with your endpoint's path
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(postData),
+      Authorization: "Bearer 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",
+    },
+  };
+
+  // Return a new promise
+  return new Promise((resolve, reject) => {
+    // Create the HTTPS request
+    const req = https.request(options, (res) => {
+      console.log("Proxy request res.statusCode:" + res.statusCode);
+      let responseBody = "";
+
+      // Set response encoding to utf8
+      res.setEncoding("utf8");
+
+      // Listen for data events to receive chunks of data
+      res.on("data", (chunk) => {
+        responseBody += chunk;
+      });
+
+      // When the response is complete, resolve the promise
+      res.on("end", () => {
+        console.log("Response from endpoint:", responseBody);
+        try {
+          if (res.statusCode == 200) {
+            resolve({
+              statusCode: res.statusCode,
+              body: responseBody,
+            });
+          } else {
+            resolve({
+              statusCode: res.statusCode,
+              body: responseBody,
+            });
+          }
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    // Handle request errors
+    req.on("error", (error) => {
+      console.error("Error sending HTTPS request:", error);
+      reject(error);
+    });
+
+    // Write data to request body and end the request
+    req.write(postData);
+    req.end();
+  });
+}
 
 function getUserAndCompany(apiKeyId) {
   return getApiKeyData(apiKeyId)
@@ -162,18 +169,18 @@ function getApiKeyData(apiKeyId) {
   // Replace 'YourTableName' with the actual table name and adjust the key structure as needed
   const params = {
     TableName: "Ares_API_Key_Customers",
-    KeyConditionExpression: '#pk = :pkval',
+    KeyConditionExpression: "#pk = :pkval",
     ExpressionAttributeNames: {
-      '#pk': 'apiKeyId', // The name of the partition key attribute
+      "#pk": "apiKeyId", // The name of the partition key attribute
     },
     ExpressionAttributeValues: {
-      ':pkval': apiKeyId, // The value of the partition key to query for
+      ":pkval": apiKeyId, // The value of the partition key to query for
     },
   };
 
   let body;
 
-  console.log("before db call");
+  console.log("getApiKeyData(), before db call");
 
   return new Promise((resolve, reject) => {
     docClient.query(params, function (err, data) {
@@ -182,7 +189,6 @@ function getApiKeyData(apiKeyId) {
         reject(err);
       } else {
         console.log("Success", data.Items);
-        console.log("db data: " + JSON.stringify(data));
         console.log("ItemCount: " + data.Count);
         resolve(data);
       }
